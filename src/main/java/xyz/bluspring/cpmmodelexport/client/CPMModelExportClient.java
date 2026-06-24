@@ -40,16 +40,15 @@ public class CPMModelExportClient implements ClientModInitializer {
         ClientCommandRegistrationCallback.EVENT.register(((dispatcher, registryAccess) -> {
             dispatcher.register(ClientCommandManager.literal("loadmodel")
                 .then(
-                    ClientCommandManager.argument("url", StringArgumentType.greedyString())
+                    ClientCommandManager.argument("output_file_name", StringArgumentType.greedyString())
                         .executes(ctx -> {
                             var gson = new GsonBuilder().setPrettyPrinting().create();
 
                             var loader = CustomPlayerModelsClient.mc.getDefinitionLoader();
-                            var url = StringArgumentType.getString(ctx, "url");
+                            var name = StringArgumentType.getString(ctx, "output_file_name");
                             //var definition = new ModelDefinition(loader, CustomPlayerModelsClient.mc.getCurrentClientPlayer());
                             try {
                                 var player = CustomPlayerModelsClient.mc.getCurrentClientPlayer();
-                                var file = new File(url);
                                 //var link = new Link("local", url);
 
                                 //var list = new LinkedList<IModelPart>();
@@ -63,26 +62,14 @@ public class CPMModelExportClient implements ClientModInitializer {
                                 //list.add(part);
                                 //definition.setParts(list);
 
-                                var fout = new FileInputStream(file);
+                                var definition = player.getModelDefinition();
+                                ModelPartDefinition part = null;
+                                if ((((ModelDefinitionAccessor) definition).getParts().get(1)) instanceof ModelPartDefinition) {
+                                    part = (ModelPartDefinition) ((ModelDefinitionAccessor) definition).getParts().get(1);
+                                } else if ((((ModelDefinitionAccessor) definition).getParts().get(1)) instanceof ModelPartDefinitionLink) {
+                                    part = (ModelPartDefinition) ((ModelDefinitionAccessor) definition).getParts().get(1).resolve();
+                                }
 
-                                if (fout.read() != ModelDefinitionLoader.HEADER)
-                                    throw new IllegalStateException("aaa");
-
-                                var cos = new ChecksumInputStream(fout);
-                                IOHelper h = new IOHelper(cos);
-                                var n = h.readUTF();
-                                var d = h.readUTF();
-                                var dataLen = h.readVarInt();
-
-                                var byteArray = new byte[dataLen];
-                                h.readFully(byteArray);
-
-                                var definition = loader.loadModel(byteArray, player);
-                                ModelPartDefinition part = (ModelPartDefinition) ((ModelDefinitionAccessor) definition).getParts().get(1);
-
-                                CustomPlayerModelsClient.mc.getCurrentClientPlayer().setModelDefinition(CompletableFuture.completedFuture(definition), true);
-
-                                var name = "genie_model";
                                 File models = new File(MinecraftClientAccess.get().getGameDir(), "player_models");
                                 models.mkdirs();
                                 File out = new File(models, name.replaceAll("[^a-zA-Z0-9\\.\\-]", "") + ".cpmproject");
