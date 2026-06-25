@@ -1,5 +1,5 @@
 ### What is it?
-It's a mod for Fabric 1.20.1 made by BluSpring.
+It's a mod for Fabric 1.20.1 made by BluSpring and slightly edited by Velamniro.
 
 ### What does it do?
 It lets you export your CPM model as a .cpmproject file. It's not perfect though, so you still shouldn't delete your .cpmproject.
