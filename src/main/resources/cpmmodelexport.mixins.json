@@ -16,7 +16,8 @@
         "ModelPartLinkMixin",
         "ModelPartPlayerAccessor",
         "ModelPartRenderEffectAccessor",
-        "ResolvedDataAccessor"
+        "ResolvedDataAccessor",
+        "EffectPerFaceUVAccessor"
     ],
     "client": [
     ],

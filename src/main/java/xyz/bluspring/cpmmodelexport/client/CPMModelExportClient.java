@@ -296,6 +296,25 @@ public class CPMModelExportClient implements ClientModInitializer {
                                             element.add("scale", vec(scaleAccessor.getScale().x, scaleAccessor.getScale().y, scaleAccessor.getScale().z));
                                             element.addProperty("mcScale", scaleAccessor.getMcScale());
                                         }
+
+                                        if (effect instanceof EffectPerFaceUV perfaceuv && ((EffectPerFaceUVAccessor) perfaceuv).getId() == internalId) {
+                                            var faceUvJson = new JsonObject();
+
+                                            ((EffectPerFaceUVAccessor) perfaceuv).getUv().faces.forEach((direction, face) -> {
+                                                var faceUv = new JsonObject();
+
+                                                faceUv.addProperty("ex", face.ex);
+                                                faceUv.addProperty("ey", face.ey);
+                                                faceUv.addProperty("sx", face.sx);
+                                                faceUv.addProperty("sy", face.sy);
+                                                faceUv.addProperty("rot", Integer.toString(face.rotation.ordinal() * 90));
+                                                faceUv.addProperty("autoUV", face.autoUV);
+
+                                                faceUvJson.add(direction.name().toLowerCase(Locale.ROOT), faceUv);
+                                            });
+
+                                            element.add("faceUV", faceUvJson);
+                                        }
                                     }
                                 }
 
