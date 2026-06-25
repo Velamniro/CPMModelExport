@@ -46,12 +46,10 @@ public class CPMModelExportClient implements ClientModInitializer {
                                 var definition = player.getModelDefinition();
 
 
-                                ModelPartDefinition part;
-                                if ((((ModelDefinitionAccessor) definition).getParts().get(1)) instanceof ModelPartDefinition) {
-                                    part = (ModelPartDefinition) ((ModelDefinitionAccessor) definition).getParts().get(1);
-                                } else { // otherwise it's ModelPartDefinitionLink, which has to be resolved
-                                    part = (ModelPartDefinition) ((ModelDefinitionAccessor) definition).getParts().get(1).resolve();
-                                }
+                                IModelPart part0 = ((ModelDefinitionAccessor) definition).getParts().get(1);
+                                ModelPartDefinition part = part0 instanceof ModelPartDefinition def
+                                        ? def
+                                        : (ModelPartDefinition) part0.resolve();
 
 
                                 var effects = new LinkedList<IRenderEffect>();
@@ -74,14 +72,12 @@ public class CPMModelExportClient implements ClientModInitializer {
                                 }
 
 
-                                var idxToIdMapping = new Int2ObjectAVLTreeMap<String>();
                                 var parentChildMapping = new Int2ObjectAVLTreeMap<List<Integer>>();
                                 var mainElements = new LinkedList<JsonObject>();
 
                                 for (RenderedCube rc : ((ModelPartDefinitionAccessor) part).getRc()) {
                                     var cube = rc.getCube();
                                     var uuid = UUID.randomUUID();
-                                    idxToIdMapping.put(cube.id, uuid.toString());
 
                                     if (!parentChildMapping.containsKey(cube.parentId)) {
                                         parentChildMapping.put(cube.parentId, new ArrayList<>());
@@ -105,18 +101,7 @@ public class CPMModelExportClient implements ClientModInitializer {
 
                                 for (int i = 0; i < modelElements.size(); i++) {
                                     var element = (JsonObject) modelElements.get(i);
-                                    var childrenIdx = parentChildMapping.get(i);
-
-                                    if (childrenIdx != null) {
-                                        var children = new JsonArray();
-                                        for (int idx : childrenIdx) {
-                                            var child = mainElements.get(idx);
-                                            children.add(child);
-                                        }
-
-                                        element.add("children", children);
-                                    }
-
+                                    attachChildren(mainElements, element, parentChildMapping.get(i));
                                     newElements.put(i, element);
                                 }
 
@@ -124,17 +109,7 @@ public class CPMModelExportClient implements ClientModInitializer {
                                     var internalId = element.get("internal_id").getAsInt();
 
                                     if (internalId > 5) {
-                                        var childrenIdx = parentChildMapping.get(internalId);
-
-                                        if (childrenIdx != null) {
-                                            var children = new JsonArray();
-                                            for (int idx : childrenIdx) {
-                                                var child = mainElements.get(idx);
-                                                children.add(child);
-                                            }
-
-                                            element.add("children", children);
-                                        }
+                                        attachChildren(mainElements, element, parentChildMapping.get(internalId));
                                     }
 
                                     for (IRenderEffect effect : effects) {
@@ -502,23 +477,40 @@ public class CPMModelExportClient implements ClientModInitializer {
         for(Random r = new Random(); out.exists(); out = new File(models, var10003 + "_" + Integer.toHexString(r.nextInt()) + ".cpmproject")) {
             var10003 = name.replaceAll("[^a-zA-Z0-9\\.\\-]", "");
         }
-        FileOutputStream fout2 = new FileOutputStream(out);
-        var zout = new ZipOutputStream(fout2);
 
-        zout.putNextEntry(new ZipEntry("config.json"));
-        zout.write(gson.toJson(generateConfig(effects, skinData, elements)).getBytes(StandardCharsets.UTF_8));
-        zout.closeEntry();
+        try (var zout = new ZipOutputStream(new FileOutputStream(out))) {
+            zout.putNextEntry(new ZipEntry("config.json"));
+            zout.write(gson.toJson(generateConfig(effects, skinData, elements)).getBytes(StandardCharsets.UTF_8));
+            zout.closeEntry();
 
-        zout.putNextEntry(new ZipEntry("anim_enc.json"));
-        zout.write(gson.toJson(createEmptyEncAnim()).getBytes(StandardCharsets.UTF_8));
-        zout.closeEntry();
+            zout.putNextEntry(new ZipEntry("anim_enc.json"));
+            zout.write(gson.toJson(createEmptyEncAnim()).getBytes(StandardCharsets.UTF_8));
+            zout.closeEntry();
 
-        zout.putNextEntry(new ZipEntry("skin.png"));
-        var baos = new ByteArrayOutputStream();
-        ImageIO.write(skinData.getImage(), baos);
-        zout.write(baos.toByteArray());
-        zout.closeEntry();
+            zout.putNextEntry(new ZipEntry("skin.png"));
+            var baos = new ByteArrayOutputStream();
+            ImageIO.write(skinData.getImage(), baos);
+            zout.write(baos.toByteArray());
+            zout.closeEntry();
+        }
+    }
 
-        zout.close();
+    /**
+     * Attaches children with ID from {@code childrenId} in {@code elements}
+     *
+     * @param elements    where to search for children
+     * @param parent      where to add children
+     * @param childrenId  list of children IDs
+     */
+    private void attachChildren(LinkedList<JsonObject> elements, JsonObject parent, List<Integer> childrenId) {
+        if (childrenId != null) {
+            var children = new JsonArray();
+            for (int id : childrenId) {
+                var child = elements.get(id);
+                children.add(child);
+            }
+
+            parent.add("children", children);
+        }
     }
 }
