@@ -10,4 +10,4 @@ It lets you export your CPM model as a .cpmproject file. It's not perfect though
 3. Load any world.
 4. Make sure the model you want to export is loaded in-game.
      1. If it's not, run `/cpmclient set_model <file_name>` (the model has to be located at `[minecraft's directory]/player_models`). If your model is stored in your skin, make sure your skin loads properly and etc.
-5. Run `/loadmodel <output_file_name>`. Now the output file is located at `[minecraft's directory]/player_models/<output_file_name>.cpmproject`.
+5. Run `/exportmodel <output_file_name>`. Now the output file is located at `[minecraft's directory]/player_models/<output_file_name>.cpmproject`.

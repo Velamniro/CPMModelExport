@@ -37,13 +37,14 @@ public class CPMModelExportClient implements ClientModInitializer {
     @Override
     public void onInitializeClient() {
         ClientCommandRegistrationCallback.EVENT.register(((dispatcher, registryAccess) -> {
-            dispatcher.register(ClientCommandManager.literal("loadmodel")
+            dispatcher.register(ClientCommandManager.literal("exportmodel")
                 .then(
                     ClientCommandManager.argument("output_file_name", StringArgumentType.greedyString())
                         .executes(ctx -> {
                             try {
                                 var player = CustomPlayerModelsClient.mc.getCurrentClientPlayer();
                                 var definition = player.getModelDefinition();
+
 
                                 ModelPartDefinition part;
                                 if ((((ModelDefinitionAccessor) definition).getParts().get(1)) instanceof ModelPartDefinition) {
