@@ -1,5 +1,6 @@
 package xyz.bluspring.cpmmodelexport.client;
 
+import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
@@ -9,6 +10,9 @@ import com.tom.cpl.util.Image;
 import com.tom.cpl.util.ImageIO;
 import com.tom.cpm.client.CustomPlayerModelsClient;
 import com.tom.cpm.shared.MinecraftClientAccess;
+import com.tom.cpm.shared.animation.CustomPose;
+import com.tom.cpm.shared.animation.IPose;
+import com.tom.cpm.shared.animation.VanillaPose;
 import com.tom.cpm.shared.definition.ModelDefinitionLoader;
 import com.tom.cpm.shared.effects.*;
 import com.tom.cpm.shared.io.ChecksumOutputStream;
@@ -51,11 +55,12 @@ public class CPMModelExportClient implements ClientModInitializer {
                                         ? def
                                         : (ModelPartDefinition) modelPart.resolve();
 
+                                var animationData = new HashMap<Integer, ResolvedDataAccessor>();
                                 var renderEffects = new LinkedList<IRenderEffect>();
                                 TextureProvider skinData = new TextureProvider();
 
                                 for (IModelPart modelOtherPart : ((ModelPartDefinitionAccessor) part).getOtherParts()) {
-                                    collectIModelPartData(modelOtherPart, renderEffects, skinData);
+                                    collectIModelPartData(modelOtherPart, renderEffects, skinData, animationData);
                                 }
 
                                 var parentChildMapping = new Int2ObjectAVLTreeMap<List<Integer>>();
@@ -105,10 +110,12 @@ public class CPMModelExportClient implements ClientModInitializer {
                                     sortedModelElements.add(obj);
                                 });
 
+                                LinkedList<JsonObject> animationList = parseAnimationData(animationData);
+
                                 var outputFileName = StringArgumentType.getString(ctx, "output_file_name");
                                 var configJson = generateConfig(renderEffects, skinData, sortedModelElements);
                                 var encAnimJson = createEmptyEncAnim();
-                                createProjectFile(outputFileName, configJson, encAnimJson, skinData);
+                                createProjectFile(outputFileName, configJson, encAnimJson, skinData, animationList);
 
                             } catch (Exception e) {
                                 e.printStackTrace();
@@ -437,7 +444,7 @@ public class CPMModelExportClient implements ClientModInitializer {
      * @param skinData        model skin data a {@code TextureProvider} instance
      * @throws IOException    if an I/O error occurs while writing the project file
      */
-    private void createProjectFile(String outputFileName, JsonObject configJson, JsonObject encAnimJson, TextureProvider skinData) throws IOException {
+    private void createProjectFile(String outputFileName, JsonObject configJson, JsonObject encAnimJson, TextureProvider skinData, LinkedList<JsonObject> animationList) throws IOException {
         var gson = new GsonBuilder().setPrettyPrinting().create();
 
         File models = new File(MinecraftClientAccess.get().getGameDir(), "player_models");
@@ -463,10 +470,14 @@ public class CPMModelExportClient implements ClientModInitializer {
             ImageIO.write(skinData.getImage(), baos);
             zout.write(baos.toByteArray());
             zout.closeEntry();
+
+            zout.putNextEntry(new ZipEntry("animations/"));
+            addAnimationsToZout(zout, animationList, gson);
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
+
 
     /**
      * Attaches children from list to parent element.
@@ -520,7 +531,7 @@ public class CPMModelExportClient implements ClientModInitializer {
      * @param effectsList  where to store {@code ModelPartRenderEffect} instances
      * @param skinData     where to store {@code ModelPartSkin} instances
      */
-    private void collectIModelPartData(IModelPart modelPart, LinkedList<IRenderEffect> effectsList, TextureProvider skinData) {
+    private void collectIModelPartData(IModelPart modelPart, LinkedList<IRenderEffect> effectsList, TextureProvider skinData, HashMap<Integer, ResolvedDataAccessor> animationData) {
         try {
             if (modelPart instanceof ModelPartRenderEffect renderEffect) {
                 effectsList.add(((ModelPartRenderEffectAccessor) renderEffect).getEffect());
@@ -538,8 +549,58 @@ public class CPMModelExportClient implements ClientModInitializer {
                 block.doReadImage();
                 skinData.texture = new DynamicTexture(block.getImage());
             }
+
+            if (modelPart instanceof ModelPartAnimation animation) {
+                ((ModelPartAnimationAccessor) animation).getParsedData().forEach((i, o) -> {
+                    animationData.put(i, (ResolvedDataAccessor) o);
+                });
+            }
         } catch (Exception e) {
             e.printStackTrace();
+        }
+    }
+
+    private LinkedList<JsonObject> parseAnimationData(HashMap<Integer, ResolvedDataAccessor> animationData) {
+        var resultList = new LinkedList<JsonObject>();
+
+        animationData.forEach((i, rdAccessor) -> {
+            var animationJson = new JsonObject();
+            IPose pose = rdAccessor.getPose();
+
+            animationJson.addProperty("hidden", rdAccessor.isButtonHidden());
+//            animationJson.addProperty("maxValue", rdAccessor.getMaxValue());
+            animationJson.addProperty("mustFinish", rdAccessor.isFinish());
+            animationJson.addProperty("priority", rdAccessor.getPriority());
+            animationJson.addProperty("command", rdAccessor.isCommand());
+            animationJson.addProperty("additive", rdAccessor.isAdd());
+            animationJson.addProperty("duration", rdAccessor.getDuration());
+            animationJson.addProperty("interpolator", rdAccessor.getIt().name().toLowerCase());
+            animationJson.addProperty("loop", rdAccessor.isLoop());
+            animationJson.addProperty("name", rdAccessor.getName());
+            animationJson.addProperty("layerControlled", rdAccessor.isLayerCtrl());
+            animationJson.addProperty("isProperty", rdAccessor.isIsProperty());
+            animationJson.addProperty("interpolateVal", rdAccessor.isInterpolateVal());
+            animationJson.addProperty("order", rdAccessor.getOrder());
+
+            if (pose instanceof VanillaPose) {
+                animationJson.addProperty("pose", ((VanillaPose) pose).name().toLowerCase());
+            } else {
+                animationJson.addProperty("pose", ((CustomPose) pose).getName().toLowerCase());
+            }
+
+            resultList.add(animationJson);
+        });
+
+        return resultList;
+    }
+
+    private void addAnimationsToZout(ZipOutputStream zout, LinkedList<JsonObject> animationList, Gson gson) throws IOException {
+        for (JsonObject animation : animationList) {
+            var uuid = UUID.randomUUID();
+            zout.putNextEntry(new ZipEntry("animations/v_" + animation.get("pose").getAsString() + "_" +
+                    animation.get("name").toString() + "_" + uuid.toString() + ".json"));
+            zout.write(gson.toJson(animation).getBytes(StandardCharsets.UTF_8));
+            zout.closeEntry();
         }
     }
 }

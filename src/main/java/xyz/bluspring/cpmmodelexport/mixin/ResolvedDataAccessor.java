@@ -74,4 +74,16 @@ public interface ResolvedDataAccessor {
 
     @Accessor
     boolean isLayerCtrl();
+
+    @Accessor
+    boolean isFinish();
+
+    @Accessor
+    byte getMaxValue();
+
+    @Accessor
+    boolean isInterpolateVal();
+
+    @Accessor
+    boolean isButtonHidden();
 }

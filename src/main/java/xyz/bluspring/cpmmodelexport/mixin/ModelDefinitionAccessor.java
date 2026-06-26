@@ -11,4 +11,7 @@ import java.util.List;
 public interface ModelDefinitionAccessor {
     @Accessor
     List<IModelPart> getParts();
+
+    @Accessor
+    List<IModelPart> getResolved();
 }
