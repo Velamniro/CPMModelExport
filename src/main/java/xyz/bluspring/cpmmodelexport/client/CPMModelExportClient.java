@@ -55,17 +55,15 @@ public class CPMModelExportClient implements ClientModInitializer {
                                 var unsortedModelElements = new LinkedList<JsonObject>();
 
                                 for (RenderedCube rc : ((ModelDefinitionAccessor) definition).getCubes()) {
-                                    if (rc.getCube() == null) {
-                                        continue;
-                                    }
                                     var cube = rc.getCube();
+                                    if (cube != null) {
+                                        if (!parentChildMapping.containsKey(cube.parentId)) {
+                                            parentChildMapping.put(cube.parentId, new ArrayList<>());
+                                        }
+                                        parentChildMapping.get(cube.parentId).add(unsortedModelElements.size());
 
-                                    if (!parentChildMapping.containsKey(cube.parentId)) {
-                                        parentChildMapping.put(cube.parentId, new ArrayList<>());
+                                        unsortedModelElements.add(createModelElementFromRenderedCube(rc));
                                     }
-                                    parentChildMapping.get(cube.parentId).add(unsortedModelElements.size());
-
-                                    unsortedModelElements.add(createModelElementFromRenderedCube(rc));
                                 }
 
                                 var sortedModelElements = new JsonArray();
