@@ -4,6 +4,7 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.mojang.brigadier.arguments.StringArgumentType;
+import com.tom.cpl.util.DynamicTexture;
 import com.tom.cpl.util.Image;
 import com.tom.cpl.util.ImageIO;
 import com.tom.cpm.client.CustomPlayerModelsClient;
@@ -29,7 +30,7 @@ import java.util.*;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
-@SuppressWarnings("UnreachableCode")
+@SuppressWarnings({"UnreachableCode", "deprecation"})
 public class CPMModelExportClient implements ClientModInitializer {
     /**
      * Runs the mod initializer on the client environment.
@@ -45,97 +46,69 @@ public class CPMModelExportClient implements ClientModInitializer {
                                 var player = CustomPlayerModelsClient.mc.getCurrentClientPlayer();
                                 var definition = player.getModelDefinition();
 
-
-                                IModelPart part0 = ((ModelDefinitionAccessor) definition).getParts().get(1);
-                                ModelPartDefinition part = part0 instanceof ModelPartDefinition def
+                                IModelPart modelPart = ((ModelDefinitionAccessor) definition).getParts().get(1);
+                                ModelPartDefinition part = modelPart instanceof ModelPartDefinition def
                                         ? def
-                                        : (ModelPartDefinition) part0.resolve();
+                                        : (ModelPartDefinition) modelPart.resolve();
 
+                                var renderEffects = new LinkedList<IRenderEffect>();
+                                TextureProvider skinData = new TextureProvider();
 
-                                var effects = new LinkedList<IRenderEffect>();
-                                TextureProvider skinData = null;
-
-                                for (IModelPart other : ((ModelPartDefinitionAccessor) part).getOtherParts()) {
-                                    if (other instanceof ModelPartRenderEffect renderEffect) {
-                                        effects.add(((ModelPartRenderEffectAccessor) renderEffect).getEffect());
-                                    }
-
-                                    if (other instanceof ModelPartSkin skin) {
-                                        var skinOut = new ByteArrayOutputStream();
-                                        var skinIo = new IOHelper(skinOut);
-                                        skin.write(skinIo);
-
-                                        var readIo = new IOHelper(new ByteArrayInputStream(skinOut.toByteArray()));
-
-                                        skinData = new TextureProvider(readIo, null);
-                                    }
+                                for (IModelPart modelOtherPart : ((ModelPartDefinitionAccessor) part).getOtherParts()) {
+                                    collectIModelPartData(modelOtherPart, renderEffects, skinData);
                                 }
 
-
                                 var parentChildMapping = new Int2ObjectAVLTreeMap<List<Integer>>();
-                                var mainElements = new LinkedList<JsonObject>();
+                                var unsortedModelElements = new LinkedList<JsonObject>();
 
                                 for (RenderedCube rc : ((ModelPartDefinitionAccessor) part).getRc()) {
                                     var cube = rc.getCube();
-                                    var uuid = UUID.randomUUID();
 
                                     if (!parentChildMapping.containsKey(cube.parentId)) {
                                         parentChildMapping.put(cube.parentId, new ArrayList<>());
                                     }
-                                    parentChildMapping.get(cube.parentId).add(mainElements.size());
+                                    parentChildMapping.get(cube.parentId).add(unsortedModelElements.size());
 
-                                    mainElements.add(createElementFromRenderedCube(rc, uuid));
+                                    unsortedModelElements.add(createModelElementFromRenderedCube(rc));
                                 }
 
+                                var sortedModelElements = new JsonArray();
+                                var basicModelElements = new JsonArray();
+                                var modelElementsMap = new Int2ObjectAVLTreeMap<JsonObject>();
 
-                                var elements = new JsonArray();
-                                var modelElements = new JsonArray();
-                                var newElements = new Int2ObjectAVLTreeMap<JsonObject>();
+                                basicModelElements.add(createDefaultElement("head"));
+                                basicModelElements.add(createDefaultElement("body"));
+                                basicModelElements.add(createDefaultElement("left_arm"));
+                                basicModelElements.add(createDefaultElement("right_arm"));
+                                basicModelElements.add(createDefaultElement("left_leg"));
+                                basicModelElements.add(createDefaultElement("right_leg"));
 
-                                var head = createEmptyElement("head", modelElements);
-                                var torso = createEmptyElement("body", modelElements);
-                                var leftArm = createEmptyElement("left_arm", modelElements);
-                                var rightArm = createEmptyElement("right_arm", modelElements);
-                                var leftLeg = createEmptyElement("left_leg", modelElements);
-                                var rightLeg = createEmptyElement("right_leg", modelElements);
-
-                                for (int i = 0; i < modelElements.size(); i++) {
-                                    var element = (JsonObject) modelElements.get(i);
-                                    attachChildren(mainElements, element, parentChildMapping.get(i));
-                                    newElements.put(i, element);
+                                for (int i = 0; i < basicModelElements.size(); i++) {
+                                    var element = (JsonObject) basicModelElements.get(i);
+                                    attachChildren(unsortedModelElements, element, parentChildMapping.get(i));
+                                    modelElementsMap.put(i, element);
                                 }
 
-                                for (JsonObject element : mainElements) {
+                                for (JsonObject element : unsortedModelElements) {
                                     var internalId = element.get("internal_id").getAsInt();
 
                                     if (internalId > 5) {
-                                        attachChildren(mainElements, element, parentChildMapping.get(internalId));
+                                        attachChildren(unsortedModelElements, element, parentChildMapping.get(internalId));
                                     }
 
-                                    for (IRenderEffect effect : effects) {
-                                        if (effect instanceof EffectGlow glow && ((EffectGlowAccessor) glow).getId() == internalId) {
-                                            element.addProperty("glow", true);
-                                        }
-
-                                        if (effect instanceof EffectScale scale && ((EffectScaleAccessor) scale).getId() == internalId) {
-                                            var scaleAccessor = ((EffectScaleAccessor) scale);
-
-                                            element.add("scale", vec(scaleAccessor.getScale().x, scaleAccessor.getScale().y, scaleAccessor.getScale().z));
-                                            element.addProperty("mcScale", scaleAccessor.getMcScale());
-                                        }
-
-                                        if (effect instanceof EffectPerFaceUV && ((EffectPerFaceUVAccessor) effect).getId() == internalId) {
-                                            element.add("faceUV", createPerFaceUVJson(((EffectPerFaceUVAccessor) effect).getUv()));
-                                        }
+                                    for (IRenderEffect effect : renderEffects) {
+                                        attachRenderEffect(element, effect);
                                     }
                                 }
 
-                                newElements.forEach((i, obj) -> {
-                                    elements.add(obj);
+                                modelElementsMap.forEach((i, obj) -> {
+                                    sortedModelElements.add(obj);
                                 });
 
-
-                                createProjectFile(StringArgumentType.getString(ctx, "output_file_name"), effects, skinData, elements);
+                                var outputFileName = StringArgumentType.getString(ctx, "output_file_name");
+                                var configJson = generateConfig(renderEffects, skinData, sortedModelElements);
+                                var encAnimJson = createEmptyEncAnim();
+                                createProjectFile(outputFileName, configJson, encAnimJson, skinData);
 
                             } catch (Exception e) {
                                 e.printStackTrace();
@@ -148,9 +121,9 @@ public class CPMModelExportClient implements ClientModInitializer {
     }
 
     /**
-     * Creates empty Enc Anim JSON
+     * Creates an empty Enc Anim.
      *
-     * @return empty Enc Anim as JSON
+     * @return empty Enc Anim as a {@code JsonObject} instance
      */
     private JsonObject createEmptyEncAnim() {
         var json = new JsonObject();
@@ -178,13 +151,12 @@ public class CPMModelExportClient implements ClientModInitializer {
     }
 
     /**
-     * Creates empty element and adds it to the provided parent
+     * Creates a default (i.e. with fixed data) element and adds it to the provided parent.
      *
      * @param id     used in {@code id} field
-     * @param parent the empty element is added to the parent
-     * @return       the empty element
+     * @return       the empty element as a {@code JsonObject} instance
      */
-    private JsonObject createEmptyElement(String id, JsonArray parent) {
+    private JsonObject createDefaultElement(String id) {
         var json = new JsonObject();
         var array = new JsonArray();
 
@@ -200,17 +172,15 @@ public class CPMModelExportClient implements ClientModInitializer {
         json.addProperty("showInEditor", true);
         json.addProperty("dup", false);
 
-        parent.add(json);
-
         return json;
     }
 
     /**
-     * Creates a 2D vector in JSON format
+     * Creates a 2D vector in JSON format.
      *
      * @param x x coordinate
      * @param y y coordinate
-     * @return vector as JsonObject
+     * @return vector as a {@code JsonObject} instance
      */
     private JsonObject vec(float x, float y) {
         var json = new JsonObject();
@@ -221,12 +191,12 @@ public class CPMModelExportClient implements ClientModInitializer {
     }
 
     /**
-     * Creates a 3D vector in JSON format
+     * Creates a 3D vector in JSON format.
      *
      * @param x x coordinate
      * @param y y coordinate
      * @param z z coordinate
-     * @return vector as JsonObject
+     * @return vector as a {@code JsonObject} instance
      */
     private JsonObject vec(float x, float y, float z) {
         var json = new JsonObject();
@@ -238,9 +208,9 @@ public class CPMModelExportClient implements ClientModInitializer {
     }
 
     /**
-     * Returns zero vector
+     * Creates a zero vector in JSON format.
      *
-     * @return zero vector as JsonObject
+     * @return zero vector as a {@code JsonObject} instance
      */
     private JsonObject zeroVec() {
         return vec(0f, 0f, 0f);
@@ -308,10 +278,10 @@ public class CPMModelExportClient implements ClientModInitializer {
     }
 
     /**
-     * Creates a JSON representation of {@code PerFaceUV}
+     * Creates a JSON representation of a {@code PerFaceUV} instance.
      *
-     * @param perFaceUV the object to serialize
-     * @return JSON representation of {@code PerFaceUV}
+     * @param perFaceUV the {@code PerFaceUV} instance to be serialized
+     * @return          the {@code PerFaceUV} instance as a {@code JsonObject} instance
      */
     private JsonObject createPerFaceUVJson(PerFaceUV perFaceUV) {
         var faceUvJson = new JsonObject();
@@ -333,14 +303,14 @@ public class CPMModelExportClient implements ClientModInitializer {
     }
 
     /**
-     * Create an element from RenderedCube
+     * Create a model element from a {@code RenderedCube} instance in JSON format.
      *
-     * @param rc provides data required to build the element representation
-     * @param uuid a UUID, used as the element name and as part of {@code storeId}
-     * @return JSON representation of the model element
+     * @param rc a {@code RenderedCube} instance used to build the element
+     * @return   the model element as a {@code JsonObject} instance
      */
-    private JsonObject createElementFromRenderedCube(RenderedCube rc, UUID uuid) {
+    private JsonObject createModelElementFromRenderedCube(RenderedCube rc) {
         var cube = rc.getCube();
+        var uuid = UUID.randomUUID();
         var id = uuid.toString();
         var json = new JsonObject();
 
@@ -378,12 +348,12 @@ public class CPMModelExportClient implements ClientModInitializer {
     }
 
     /**
-     * Generates a config for a model.
+     * Generates a config for a model in JSON format.
      *
-     * @param effects a list of {@code IRenderEffect} to be parsed and written into the config
-     * @param skinData skin data from {@code ModelPartSkin} contained in {@code ModelDefinition}
-     * @param elements a JSON representation of elements (parts) of a model
-     * @return the model config as {@code JsonObject}
+     * @param effects  a list of {@code IRenderEffect} instances to be parsed and written into the config
+     * @param skinData model's skin data as a {@code TextureProvider} instance
+     * @param elements elements (parts) of a model as a {@code JsonArray} instance
+     * @return         the model config as a {@code JsonObject} instance
      */
     private JsonObject generateConfig(LinkedList<IRenderEffect> effects, TextureProvider skinData, JsonArray elements) {
         var configJson = new JsonObject();
@@ -459,32 +429,33 @@ public class CPMModelExportClient implements ClientModInitializer {
 
     /**
      * Creates a .cpmproject file for a model at {@code minecraft/player_models/<name>.cpmproject} path
+     * using provided data.
      *
-     * @param name       the name of the output file
-     * @param effects    a list of effects applied to the model
-     * @param skinData   model skin data
-     * @param elements   model elements in JSON format
-     * @throws IOException if an I/O error occurs while writing the file
+     * @param outputFileName  the name of the output file
+     * @param configJson      the config.json file as a {@code JsonObject} instance
+     * @param encAnimJson     the enc_anim.json file as a {@code JsonObject} instance
+     * @param skinData        model skin data a {@code TextureProvider} instance
+     * @throws IOException    if an I/O error occurs while writing the project file
      */
-    private void createProjectFile(String name, LinkedList<IRenderEffect> effects, TextureProvider skinData, JsonArray elements) throws IOException {
+    private void createProjectFile(String outputFileName, JsonObject configJson, JsonObject encAnimJson, TextureProvider skinData) throws IOException {
         var gson = new GsonBuilder().setPrettyPrinting().create();
 
         File models = new File(MinecraftClientAccess.get().getGameDir(), "player_models");
         models.mkdirs();
-        File out = new File(models, name.replaceAll("[^a-zA-Z0-9\\.\\-]", "") + ".cpmproject");
+        File out = new File(models, outputFileName.replaceAll("[^a-zA-Z0-9\\.\\-]", "") + ".cpmproject");
 
         String var10003;
         for(Random r = new Random(); out.exists(); out = new File(models, var10003 + "_" + Integer.toHexString(r.nextInt()) + ".cpmproject")) {
-            var10003 = name.replaceAll("[^a-zA-Z0-9\\.\\-]", "");
+            var10003 = outputFileName.replaceAll("[^a-zA-Z0-9\\.\\-]", "");
         }
 
         try (var zout = new ZipOutputStream(new FileOutputStream(out))) {
             zout.putNextEntry(new ZipEntry("config.json"));
-            zout.write(gson.toJson(generateConfig(effects, skinData, elements)).getBytes(StandardCharsets.UTF_8));
+            zout.write(gson.toJson(configJson).getBytes(StandardCharsets.UTF_8));
             zout.closeEntry();
 
             zout.putNextEntry(new ZipEntry("anim_enc.json"));
-            zout.write(gson.toJson(createEmptyEncAnim()).getBytes(StandardCharsets.UTF_8));
+            zout.write(gson.toJson(encAnimJson).getBytes(StandardCharsets.UTF_8));
             zout.closeEntry();
 
             zout.putNextEntry(new ZipEntry("skin.png"));
@@ -492,25 +463,83 @@ public class CPMModelExportClient implements ClientModInitializer {
             ImageIO.write(skinData.getImage(), baos);
             zout.write(baos.toByteArray());
             zout.closeEntry();
+        } catch (Exception e) {
+            e.printStackTrace();
         }
     }
 
     /**
-     * Attaches children with ID from {@code childrenId} in {@code elements}
+     * Attaches children from list to parent element.
      *
-     * @param elements    where to search for children
-     * @param parent      where to add children
-     * @param childrenId  list of children IDs
+     * @param elements           where to search for children
+     * @param parentElement      where to add children
+     * @param childrenIDs        list of children IDs
      */
-    private void attachChildren(LinkedList<JsonObject> elements, JsonObject parent, List<Integer> childrenId) {
-        if (childrenId != null) {
+    private void attachChildren(LinkedList<JsonObject> elements, JsonObject parentElement, List<Integer> childrenIDs) {
+        if (childrenIDs != null) {
             var children = new JsonArray();
-            for (int id : childrenId) {
+            for (int id : childrenIDs) {
                 var child = elements.get(id);
                 children.add(child);
             }
 
-            parent.add("children", children);
+            parentElement.add("children", children);
+        }
+    }
+
+    /**
+     * Attaches an {@code IRenderEffect} instance to the element if their ID match each other.
+     *
+     * @param element           where to attach render effect
+     * @param renderEffect      an {@code IRenderEffect} instance to be attached
+     */
+    private void attachRenderEffect(JsonObject element, IRenderEffect renderEffect) {
+        var internalElementID = element.get("internal_id").getAsInt();
+
+        if (renderEffect instanceof EffectGlow glow && ((EffectGlowAccessor) glow).getId() == internalElementID) {
+            element.addProperty("glow", true);
+        }
+
+        if (renderEffect instanceof EffectScale scale && ((EffectScaleAccessor) scale).getId() == internalElementID) {
+            var scaleAccessor = ((EffectScaleAccessor) scale);
+
+            element.add("scale", vec(scaleAccessor.getScale().x, scaleAccessor.getScale().y, scaleAccessor.getScale().z));
+            element.addProperty("mcScale", scaleAccessor.getMcScale());
+        }
+
+        if (renderEffect instanceof EffectPerFaceUV && ((EffectPerFaceUVAccessor) renderEffect).getId() == internalElementID) {
+            element.add("faceUV", createPerFaceUVJson(((EffectPerFaceUVAccessor) renderEffect).getUv()));
+        }
+
+    }
+
+    /**
+     * Collects data from an {@code IModelPart} instance to the corresponding list or variable.
+     *
+     * @param modelPart    an {@code IModelPart} instance to write in
+     * @param effectsList  where to store {@code ModelPartRenderEffect} instances
+     * @param skinData     where to store {@code ModelPartSkin} instances
+     */
+    private void collectIModelPartData(IModelPart modelPart, LinkedList<IRenderEffect> effectsList, TextureProvider skinData) {
+        try {
+            if (modelPart instanceof ModelPartRenderEffect renderEffect) {
+                effectsList.add(((ModelPartRenderEffectAccessor) renderEffect).getEffect());
+            }
+
+            if (modelPart instanceof ModelPartSkin skin) {
+                var skinOut = new ByteArrayOutputStream();
+                var skinIo = new IOHelper(skinOut);
+                skin.write(skinIo);
+
+                var readIo = new IOHelper(new ByteArrayInputStream(skinOut.toByteArray()));
+
+                skinData.size = readIo.read2s();
+                IOHelper.ImageBlock block = readIo.readImage();
+                block.doReadImage();
+                skinData.texture = new DynamicTexture(block.getImage());
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
         }
     }
 }
