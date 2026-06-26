@@ -4,16 +4,17 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.mojang.brigadier.arguments.StringArgumentType;
-import com.tom.cpl.util.DynamicTexture;
 import com.tom.cpl.util.Image;
 import com.tom.cpl.util.ImageIO;
 import com.tom.cpm.client.CustomPlayerModelsClient;
 import com.tom.cpm.shared.MinecraftClientAccess;
+import com.tom.cpm.shared.definition.ModelDefinition;
 import com.tom.cpm.shared.definition.ModelDefinitionLoader;
 import com.tom.cpm.shared.effects.*;
 import com.tom.cpm.shared.io.ChecksumOutputStream;
 import com.tom.cpm.shared.io.IOHelper;
 import com.tom.cpm.shared.model.RenderedCube;
+import com.tom.cpm.shared.model.TextureSheetType;
 import com.tom.cpm.shared.model.render.PerFaceUV;
 import com.tom.cpm.shared.parts.*;
 import com.tom.cpm.shared.skin.TextureProvider;
@@ -30,7 +31,7 @@ import java.util.*;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
-@SuppressWarnings({"UnreachableCode", "deprecation"})
+@SuppressWarnings("UnreachableCode")
 public class CPMModelExportClient implements ClientModInitializer {
     /**
      * Runs the mod initializer on the client environment.
@@ -45,23 +46,18 @@ public class CPMModelExportClient implements ClientModInitializer {
                             try {
                                 var player = CustomPlayerModelsClient.mc.getCurrentClientPlayer();
                                 var definition = player.getModelDefinition();
-
-                                IModelPart modelPart = ((ModelDefinitionAccessor) definition).getParts().get(1);
-                                ModelPartDefinition part = modelPart instanceof ModelPartDefinition def
-                                        ? def
-                                        : (ModelPartDefinition) modelPart.resolve();
-
-                                var renderEffects = new LinkedList<IRenderEffect>();
-                                TextureProvider skinData = new TextureProvider();
-
-                                for (IModelPart modelOtherPart : ((ModelPartDefinitionAccessor) part).getOtherParts()) {
-                                    collectIModelPartData(modelOtherPart, renderEffects, skinData);
+                                if (definition.getResolveState() != ModelDefinition.ModelLoadingState.LOADED) {
+                                    System.out.println("Wait for your model to load!");
+                                    return 1;
                                 }
 
                                 var parentChildMapping = new Int2ObjectAVLTreeMap<List<Integer>>();
                                 var unsortedModelElements = new LinkedList<JsonObject>();
 
-                                for (RenderedCube rc : ((ModelPartDefinitionAccessor) part).getRc()) {
+                                for (RenderedCube rc : ((ModelDefinitionAccessor) definition).getCubes()) {
+                                    if (rc.getCube() == null) {
+                                        continue;
+                                    }
                                     var cube = rc.getCube();
 
                                     if (!parentChildMapping.containsKey(cube.parentId)) {
@@ -95,10 +91,6 @@ public class CPMModelExportClient implements ClientModInitializer {
                                     if (internalId > 5) {
                                         attachChildren(unsortedModelElements, element, parentChildMapping.get(internalId));
                                     }
-
-                                    for (IRenderEffect effect : renderEffects) {
-                                        attachRenderEffect(element, effect);
-                                    }
                                 }
 
                                 modelElementsMap.forEach((i, obj) -> {
@@ -106,9 +98,9 @@ public class CPMModelExportClient implements ClientModInitializer {
                                 });
 
                                 var outputFileName = StringArgumentType.getString(ctx, "output_file_name");
-                                var configJson = generateConfig(renderEffects, skinData, sortedModelElements);
+                                var configJson = generateConfig(definition, sortedModelElements);
                                 var encAnimJson = createEmptyEncAnim();
-                                createProjectFile(outputFileName, configJson, encAnimJson, skinData);
+                                createProjectFile(outputFileName, configJson, encAnimJson, definition.getTexture(TextureSheetType.SKIN, true));
 
                             } catch (Exception e) {
                                 e.printStackTrace();
@@ -350,13 +342,13 @@ public class CPMModelExportClient implements ClientModInitializer {
     /**
      * Generates a config for a model in JSON format.
      *
-     * @param effects  a list of {@code IRenderEffect} instances to be parsed and written into the config
-     * @param skinData model's skin data as a {@code TextureProvider} instance
-     * @param elements elements (parts) of a model as a {@code JsonArray} instance
-     * @return         the model config as a {@code JsonObject} instance
+     * @param definition the model itself as {@code ModelDefinition} instance
+     * @param elements   elements (parts) of a model as a {@code JsonArray} instance
+     * @return           the model config as a {@code JsonObject} instance
      */
-    private JsonObject generateConfig(LinkedList<IRenderEffect> effects, TextureProvider skinData, JsonArray elements) {
+    private JsonObject generateConfig(ModelDefinition definition, JsonArray elements) {
         var configJson = new JsonObject();
+        TextureProvider skinData = definition.getTexture(TextureSheetType.SKIN, true);
 
         configJson.addProperty("removeBedOffset", false);
         configJson.addProperty("scaling", 0.0);
@@ -372,52 +364,30 @@ public class CPMModelExportClient implements ClientModInitializer {
             return json;
         }));
 
-        var invisGlow = false;
-        var hideSkull = false;
-        var removeArmorOffset = true;
-        var removeBedOffset = false;
         var firstPersonHand = Util.make(() -> {
             var json = new JsonObject();
+            var left = definition.fpLeftHand;
+            var right = definition.fpRightHand;
 
-            json.add("left", emptyTransform());
-            json.add("right", emptyTransform());
+            if (left != null) {
+                json.add("left", transform(left.getRPos().x, left.getRPos().y, left.getRPos().z, left.getRotationDeg().x, left.getRotationDeg().y, left.getRotationDeg().z, left.getRScale().x, left.getRScale().y, left.getRScale().z));
+            } else {
+                json.add("left", emptyTransform());
+            }
+            if (right != null) {
+                json.add("right", transform(right.getRPos().x, right.getRPos().y, right.getRPos().z, right.getRotationDeg().x, right.getRotationDeg().y, right.getRotationDeg().z, right.getRScale().x, right.getRScale().y, right.getRScale().z));
+
+            } else {
+                json.add("right", emptyTransform());
+            }
 
             return json;
         });
-        for (IRenderEffect effect : effects) {
-            if (effect instanceof EffectInvisGlow) {
-                invisGlow = true;
-            }
 
-            if (effect instanceof EffectHideSkull) {
-                hideSkull = ((EffectHideSkullAccessor) effect).isHide();
-            }
-
-            if (effect instanceof EffectRemoveArmorOffset) {
-                removeArmorOffset = ((EffectRemoveArmorOffsetAccessor) effect).isRemove();
-            }
-
-            if (effect instanceof EffectRemoveBedOffset) {
-                removeBedOffset = true;
-            }
-
-            if (effect instanceof EffectFirstPersonHandPos) {
-                var left = ((EffectFirstPersonHandPosAccessor) effect).getLeftHand();
-                var right = ((EffectFirstPersonHandPosAccessor) effect).getRightHand();
-
-                firstPersonHand.add("left", transform(left.getRPos().x, left.getRPos().y, left.getRPos().z, left.getRotationDeg().x, left.getRotationDeg().y, left.getRotationDeg().z, left.getRScale().x, left.getRScale().y, left.getRScale().z));
-                firstPersonHand.add("right", transform(right.getRPos().x, right.getRPos().y, right.getRPos().z, right.getRotationDeg().x, right.getRotationDeg().y, right.getRotationDeg().z, right.getRScale().x, right.getRScale().y, right.getRScale().z));
-            }
-
-            if (effect instanceof EffectScaling) {
-
-            }
-        }
-
-        configJson.addProperty("enableInvisGlow", invisGlow);
-        configJson.addProperty("hideHeadIfSkull", hideSkull);
-        configJson.addProperty("removeArmorOffset", removeArmorOffset);
-        configJson.addProperty("removeBedOffset", removeBedOffset);
+        configJson.addProperty("enableInvisGlow", definition.enableInvisGlow);
+        configJson.addProperty("hideHeadIfSkull", definition.hideHeadIfSkull);
+        configJson.addProperty("removeArmorOffset", definition.removeArmorOffset);
+        configJson.addProperty("removeBedOffset", definition.removeBedOffset);
         configJson.add("firstPersonHand", firstPersonHand);
         configJson.add("skinSize", vec(skinData.size.x, skinData.size.y));
         configJson.addProperty("version", 1);
@@ -484,62 +454,6 @@ public class CPMModelExportClient implements ClientModInitializer {
             }
 
             parentElement.add("children", children);
-        }
-    }
-
-    /**
-     * Attaches an {@code IRenderEffect} instance to the element if their ID match each other.
-     *
-     * @param element           where to attach render effect
-     * @param renderEffect      an {@code IRenderEffect} instance to be attached
-     */
-    private void attachRenderEffect(JsonObject element, IRenderEffect renderEffect) {
-        var internalElementID = element.get("internal_id").getAsInt();
-
-        if (renderEffect instanceof EffectGlow glow && ((EffectGlowAccessor) glow).getId() == internalElementID) {
-            element.addProperty("glow", true);
-        }
-
-        if (renderEffect instanceof EffectScale scale && ((EffectScaleAccessor) scale).getId() == internalElementID) {
-            var scaleAccessor = ((EffectScaleAccessor) scale);
-
-            element.add("scale", vec(scaleAccessor.getScale().x, scaleAccessor.getScale().y, scaleAccessor.getScale().z));
-            element.addProperty("mcScale", scaleAccessor.getMcScale());
-        }
-
-        if (renderEffect instanceof EffectPerFaceUV && ((EffectPerFaceUVAccessor) renderEffect).getId() == internalElementID) {
-            element.add("faceUV", createPerFaceUVJson(((EffectPerFaceUVAccessor) renderEffect).getUv()));
-        }
-
-    }
-
-    /**
-     * Collects data from an {@code IModelPart} instance to the corresponding list or variable.
-     *
-     * @param modelPart    an {@code IModelPart} instance to write in
-     * @param effectsList  where to store {@code ModelPartRenderEffect} instances
-     * @param skinData     where to store {@code ModelPartSkin} instances
-     */
-    private void collectIModelPartData(IModelPart modelPart, LinkedList<IRenderEffect> effectsList, TextureProvider skinData) {
-        try {
-            if (modelPart instanceof ModelPartRenderEffect renderEffect) {
-                effectsList.add(((ModelPartRenderEffectAccessor) renderEffect).getEffect());
-            }
-
-            if (modelPart instanceof ModelPartSkin skin) {
-                var skinOut = new ByteArrayOutputStream();
-                var skinIo = new IOHelper(skinOut);
-                skin.write(skinIo);
-
-                var readIo = new IOHelper(new ByteArrayInputStream(skinOut.toByteArray()));
-
-                skinData.size = readIo.read2s();
-                IOHelper.ImageBlock block = readIo.readImage();
-                block.doReadImage();
-                skinData.texture = new DynamicTexture(block.getImage());
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
         }
     }
 }
