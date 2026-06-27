@@ -4,9 +4,9 @@
     "version": "${version}",
     "name": "CPMModelExport",
     "description": "",
-    "authors": [],
+    "authors": ["BluSpring", "Velamniro"],
     "contact": {
-        "repo": "https://github.com/BluSpring/CPMModelExport"
+        "repo": "https://github.com/Velamniro/CPMModelExport"
     },
     "license": "MIT",
     "icon": "assets/cpmmodelexport/icon.png",
@@ -24,7 +24,7 @@
     ],
     "depends": {
         "fabricloader": ">=${loader_version}",
-        "fabric": "*",
+        "fabric-api": "*",
         "minecraft": "${minecraft_version}"
     }
 }
