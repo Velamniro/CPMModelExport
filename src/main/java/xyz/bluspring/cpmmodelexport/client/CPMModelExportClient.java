@@ -4,19 +4,15 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.mojang.brigadier.arguments.StringArgumentType;
-import com.tom.cpl.util.Image;
+import com.tom.cpl.math.Vec3f;
 import com.tom.cpl.util.ImageIO;
 import com.tom.cpm.client.CustomPlayerModelsClient;
 import com.tom.cpm.shared.MinecraftClientAccess;
 import com.tom.cpm.shared.definition.ModelDefinition;
-import com.tom.cpm.shared.definition.ModelDefinitionLoader;
-import com.tom.cpm.shared.effects.*;
-import com.tom.cpm.shared.io.ChecksumOutputStream;
-import com.tom.cpm.shared.io.IOHelper;
+import com.tom.cpm.shared.model.PlayerModelParts;
 import com.tom.cpm.shared.model.RenderedCube;
+import com.tom.cpm.shared.model.RootModelElement;
 import com.tom.cpm.shared.model.TextureSheetType;
-import com.tom.cpm.shared.model.render.PerFaceUV;
-import com.tom.cpm.shared.parts.*;
 import com.tom.cpm.shared.skin.TextureProvider;
 import it.unimi.dsi.fastutil.ints.Int2ObjectAVLTreeMap;
 import net.fabricmc.api.ClientModInitializer;
@@ -52,51 +48,49 @@ public class CPMModelExportClient implements ClientModInitializer {
                                 }
 
                                 var parentChildMapping = new Int2ObjectAVLTreeMap<List<Integer>>();
-                                var unsortedModelElements = new LinkedList<JsonObject>();
+                                var rootElementsMapping = new HashMap<Integer, Integer>();
+                                var unsortedElements = new LinkedList<JsonObject>();
 
+                                // parsing RenderedCubes and filling up these three variables
                                 for (RenderedCube rc : ((ModelDefinitionAccessor) definition).getCubes()) {
                                     var cube = rc.getCube();
                                     if (cube != null) {
                                         if (!parentChildMapping.containsKey(cube.parentId)) {
                                             parentChildMapping.put(cube.parentId, new ArrayList<>());
                                         }
-                                        parentChildMapping.get(cube.parentId).add(unsortedModelElements.size());
+                                        parentChildMapping.get(cube.parentId).add(unsortedElements.size());
 
-                                        unsortedModelElements.add(createModelElementFromRenderedCube(rc));
+                                        unsortedElements.add(createElementFromRenderedCube(rc));
+                                    } else if (((RootModelElement) rc).getPart() instanceof PlayerModelParts) {
+                                        rootElementsMapping.put(rc.getId(), unsortedElements.size());
+                                        unsortedElements.add(createElementFromRenderedCube(rc));
                                     }
                                 }
 
-                                var sortedModelElements = new JsonArray();
-                                var basicModelElements = new JsonArray();
-                                var modelElementsMap = new Int2ObjectAVLTreeMap<JsonObject>();
-
-                                basicModelElements.add(createDefaultElement("head"));
-                                basicModelElements.add(createDefaultElement("body"));
-                                basicModelElements.add(createDefaultElement("left_arm"));
-                                basicModelElements.add(createDefaultElement("right_arm"));
-                                basicModelElements.add(createDefaultElement("left_leg"));
-                                basicModelElements.add(createDefaultElement("right_leg"));
-
-                                for (int i = 0; i < basicModelElements.size(); i++) {
-                                    var element = (JsonObject) basicModelElements.get(i);
-                                    attachChildren(unsortedModelElements, element, parentChildMapping.get(i));
-                                    modelElementsMap.put(i, element);
-                                }
-
-                                for (JsonObject element : unsortedModelElements) {
+                                // Adding children to elements according to parentChildMapping
+                                for (JsonObject element : unsortedElements) {
                                     var internalId = element.get("internal_id").getAsInt();
+                                    var childrenIDs = parentChildMapping.get(internalId);
 
-                                    if (internalId > 5) {
-                                        attachChildren(unsortedModelElements, element, parentChildMapping.get(internalId));
+                                    if (childrenIDs != null) {
+                                        var children = new JsonArray();
+                                        for (int id : childrenIDs) {
+                                            children.add(unsortedElements.get(id));
+                                        }
+
+                                        element.add("children", children);
                                     }
                                 }
 
-                                modelElementsMap.forEach((i, obj) -> {
-                                    sortedModelElements.add(obj);
-                                });
+                                var sortedElements = new JsonArray();
+
+                                for (int i = 0; i < rootElementsMapping.size(); i++) {
+                                    var rootElement = unsortedElements.get(rootElementsMapping.get(i));
+                                    sortedElements.add(rootElement);
+                                }
 
                                 var outputFileName = StringArgumentType.getString(ctx, "output_file_name");
-                                var configJson = generateConfig(definition, sortedModelElements);
+                                var configJson = createConfigJson(definition, sortedElements);
                                 var encAnimJson = createEmptyEncAnim();
                                 createProjectFile(outputFileName, configJson, encAnimJson, definition.getTexture(TextureSheetType.SKIN, true));
 
@@ -136,31 +130,6 @@ public class CPMModelExportClient implements ClientModInitializer {
 
         json.add("freeLayers", freeLayers);
         json.add("defaultValues", defaultValues);
-
-        return json;
-    }
-
-    /**
-     * Creates a default (i.e. with fixed data) element and adds it to the provided parent.
-     *
-     * @param id     used in {@code id} field
-     * @return       the empty element as a {@code JsonObject} instance
-     */
-    private JsonObject createDefaultElement(String id) {
-        var json = new JsonObject();
-        var array = new JsonArray();
-
-        json.addProperty("disableVanillaAnim", false);
-        json.add("children", array);
-        json.add("pos", zeroVec());
-        json.add("rotation", zeroVec());
-        json.addProperty("nameColor", 0);
-        json.addProperty("show", false);
-        json.addProperty("name", "");
-        json.addProperty("id", id);
-        json.addProperty("locked", false);
-        json.addProperty("showInEditor", true);
-        json.addProperty("dup", false);
 
         return json;
     }
@@ -226,125 +195,89 @@ public class CPMModelExportClient implements ClientModInitializer {
         return json;
     }
 
-    private void storeModel(String name, String desc, Image icon, byte[] data) throws IOException {
-        File models = new File(MinecraftClientAccess.get().getGameDir(), "player_models");
-        models.mkdirs();
-        File out = new File(models, name.replaceAll("[^a-zA-Z0-9\\.\\-]", "") + ".cpmmodel");
-
-        String var10003;
-        for(Random r = new Random(); out.exists(); out = new File(models, var10003 + "_" + Integer.toHexString(r.nextInt()) + ".cpmmodel")) {
-            var10003 = name.replaceAll("[^a-zA-Z0-9\\.\\-]", "");
-        }
-
-        FileOutputStream fout = new FileOutputStream(out);
-
-        try {
-            fout.write(ModelDefinitionLoader.HEADER);
-            ChecksumOutputStream cos = new ChecksumOutputStream(fout);
-            IOHelper h = new IOHelper(cos);
-            h.writeUTF(name);
-            h.writeUTF(desc != null ? desc : "");
-            h.writeVarInt(data.length);
-            h.write(data);
-            h.writeVarInt(0);
-            if (icon != null) {
-                h.writeImage(icon);
-            } else {
-                h.writeVarInt(0);
-            }
-
-            cos.close();
-        } catch (Throwable var12) {
-            try {
-                fout.close();
-            } catch (Throwable var11) {
-                var12.addSuppressed(var11);
-            }
-
-            throw var12;
-        }
-
-        fout.close();
-    }
-
-    /**
-     * Creates a JSON representation of a {@code PerFaceUV} instance.
-     *
-     * @param perFaceUV the {@code PerFaceUV} instance to be serialized
-     * @return          the {@code PerFaceUV} instance as a {@code JsonObject} instance
-     */
-    private JsonObject createPerFaceUVJson(PerFaceUV perFaceUV) {
-        var faceUvJson = new JsonObject();
-
-        perFaceUV.faces.forEach((direction, face) -> {
-            var faceUv = new JsonObject();
-
-            faceUv.addProperty("ex", face.ex);
-            faceUv.addProperty("ey", face.ey);
-            faceUv.addProperty("sx", face.sx);
-            faceUv.addProperty("sy", face.sy);
-            faceUv.addProperty("rot", Integer.toString(face.rotation.ordinal() * 90));
-            faceUv.addProperty("autoUV", face.autoUV);
-
-            faceUvJson.add(direction.name().toLowerCase(Locale.ROOT), faceUv);
-        });
-
-        return faceUvJson;
-    }
-
     /**
      * Create a model element from a {@code RenderedCube} instance in JSON format.
      *
      * @param rc a {@code RenderedCube} instance used to build the element
      * @return   the model element as a {@code JsonObject} instance
      */
-    private JsonObject createModelElementFromRenderedCube(RenderedCube rc) {
-        var cube = rc.getCube();
-        var uuid = UUID.randomUUID();
-        var id = uuid.toString();
+    private JsonObject createElementFromRenderedCube(RenderedCube rc) {
         var json = new JsonObject();
+        Vec3f rot;
 
-        json.addProperty("internal_id", cube.id);
-        json.addProperty("internal_parent_id", cube.parentId);
-        json.addProperty("name", id);
-        json.addProperty("mirror", false);
-        json.add("offset", vec(rc.offset.x, rc.offset.y, rc.offset.z));
-        json.addProperty("color", Integer.toHexString(rc.color));
-        json.addProperty("hidden", cube.hidden);
-        json.addProperty("texture", cube.texSize != 0);
-        json.addProperty("nameColor", rc.color);
-        var rot = rc.rotation.asVec3f(true);
-        json.add("rotation", vec(rot.x, rot.y, rot.z));
+        // universal properties
+        json.addProperty("internal_id", rc.getId());
         json.addProperty("show", rc.display);
-        json.add("scale", vec(rc.renderScale.x, rc.renderScale.y, rc.renderScale.z));
-        json.addProperty("storeId", uuid.getMostSignificantBits());
-        json.addProperty("textureSize", cube.texSize);
-        json.addProperty("mcScale", cube.mcScale);
-        json.add("size", vec(cube.size.x, cube.size.y, cube.size.z));
-        json.add("pos", vec(cube.pos.x, cube.pos.y, cube.pos.z));
-        json.addProperty("u", cube.u);
-        json.addProperty("v", cube.v);
-        json.addProperty("singleTex", rc.singleTex);
-        json.addProperty("extrude", rc.extrude);
-        json.addProperty("recolor", rc.recolor);
+        json.addProperty("nameColor", rc.color);
+        json.addProperty("hidden", rc.isHidden());
         json.addProperty("locked", false);
-        json.addProperty("glow", rc.glow);
+
+        if (!(rc instanceof RootModelElement)) {
+            var cube = rc.getCube();
+            var uuid = UUID.randomUUID();
+            var id = uuid.toString();
+            rot = rc.rotation.asVec3f(true);
+
+            json.addProperty("internal_parent_id", cube.parentId);
+            json.addProperty("name", id);
+            json.addProperty("mirror", false);
+            json.add("offset", vec(rc.offset.x, rc.offset.y, rc.offset.z));
+            json.addProperty("color", Integer.toHexString(rc.color));
+            json.addProperty("texture", cube.texSize != 0);
+            json.add("scale", vec(rc.renderScale.x, rc.renderScale.y, rc.renderScale.z));
+            json.addProperty("storeId", uuid.getMostSignificantBits());
+            json.addProperty("textureSize", cube.texSize);
+            json.addProperty("mcScale", cube.mcScale);
+            json.add("size", vec(cube.size.x, cube.size.y, cube.size.z));
+            json.add("pos", vec(cube.pos.x, cube.pos.y, cube.pos.z));
+            json.addProperty("u", cube.u);
+            json.addProperty("v", cube.v);
+            json.addProperty("singleTex", rc.singleTex);
+            json.addProperty("extrude", rc.extrude);
+            json.addProperty("recolor", rc.recolor);
+            json.addProperty("glow", rc.glow);
+        } else {
+            rot = ((RootModelElement) rc).rotN.asVec3f(true);
+
+            json.addProperty("disableVanillaAnim", ((RootModelElement) rc).disableVanilla);
+            json.add("pos", vec(((RootModelElement) rc).posN.x, ((RootModelElement) rc).posN.y, ((RootModelElement) rc).posN.z));
+            json.addProperty("name", "");
+            json.addProperty("id", ((RootModelElement) rc).getPart().getName());
+            json.addProperty("showInEditor", true);
+            json.addProperty("dup", false);
+        }
+        json.add("rotation", vec(rot.x, rot.y, rot.z));
 
         if (rc.faceUVs != null) {
-            json.add("faceUV", createPerFaceUVJson(rc.faceUVs));
+            var faceUVsJson = new JsonObject();
+
+            rc.faceUVs.faces.forEach((direction, face) -> {
+                var faceJson = new JsonObject();
+
+                faceJson.addProperty("ex", face.ex);
+                faceJson.addProperty("ey", face.ey);
+                faceJson.addProperty("sx", face.sx);
+                faceJson.addProperty("sy", face.sy);
+                faceJson.addProperty("rot", Integer.toString(face.rotation.ordinal() * 90));
+                faceJson.addProperty("autoUV", face.autoUV);
+
+                faceUVsJson.add(direction.name().toLowerCase(Locale.ROOT), faceJson);
+            });
+
+            json.add("faceUV", faceUVsJson);
         }
 
         return json;
     }
 
     /**
-     * Generates a config for a model in JSON format.
+     * Creates a config for a model in JSON format.
      *
      * @param definition the model itself as {@code ModelDefinition} instance
      * @param elements   elements (parts) of a model as a {@code JsonArray} instance
      * @return           the model config as a {@code JsonObject} instance
      */
-    private JsonObject generateConfig(ModelDefinition definition, JsonArray elements) {
+    private JsonObject createConfigJson(ModelDefinition definition, JsonArray elements) {
         var configJson = new JsonObject();
         TextureProvider skinData = definition.getTexture(TextureSheetType.SKIN, true);
 
@@ -433,25 +366,6 @@ public class CPMModelExportClient implements ClientModInitializer {
             zout.closeEntry();
         } catch (Exception e) {
             e.printStackTrace();
-        }
-    }
-
-    /**
-     * Attaches children from list to parent element.
-     *
-     * @param elements           where to search for children
-     * @param parentElement      where to add children
-     * @param childrenIDs        list of children IDs
-     */
-    private void attachChildren(LinkedList<JsonObject> elements, JsonObject parentElement, List<Integer> childrenIDs) {
-        if (childrenIDs != null) {
-            var children = new JsonArray();
-            for (int id : childrenIDs) {
-                var child = elements.get(id);
-                children.add(child);
-            }
-
-            parentElement.add("children", children);
         }
     }
 }
