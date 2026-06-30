@@ -25,9 +25,7 @@ import net.minecraft.Util;
 import xyz.bluspring.cpmmodelexport.mixin.*;
 
 import java.io.*;
-import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
-import java.text.DecimalFormat;
 import java.util.*;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -54,6 +52,7 @@ public class CPMModelExportClient implements ClientModInitializer {
 
                                 var parentChildMapping = new Int2ObjectAVLTreeMap<List<Integer>>();
                                 var rootElementsMapping = new HashMap<Integer, Integer>();
+                                var internalIdStoreIdMapping = new HashMap<Integer, Long>();
                                 var unsortedElements = new LinkedList<JsonObject>();
 
                                 // parsing RenderedCubes and filling up these three variables
@@ -65,10 +64,14 @@ public class CPMModelExportClient implements ClientModInitializer {
                                         }
                                         parentChildMapping.get(cube.parentId).add(unsortedElements.size());
 
-                                        unsortedElements.add(createElementFromRenderedCube(rc));
+                                        JsonObject element = createElementFromRenderedCube(rc);
+                                        internalIdStoreIdMapping.put(rc.getId(), element.get("storeID").getAsLong());
+                                        unsortedElements.add(element);
                                     } else if (((RootModelElement) rc).getPart() instanceof PlayerModelParts) {
                                         rootElementsMapping.put(rc.getId(), unsortedElements.size());
-                                        unsortedElements.add(createElementFromRenderedCube(rc));
+                                        JsonObject element = createElementFromRenderedCube(rc);
+                                        internalIdStoreIdMapping.put(rc.getId(), element.get("storeID").getAsLong());
+                                        unsortedElements.add(element);
                                     }
                                 }
 
@@ -102,7 +105,7 @@ public class CPMModelExportClient implements ClientModInitializer {
                                     i++;
                                 }
 
-                                LinkedList<JsonObject> animationList = parseAnimationData(animationData, unsortedElements);
+                                LinkedList<JsonObject> animationList = parseAnimationData(animationData, internalIdStoreIdMapping);
 
                                 var outputFileName = StringArgumentType.getString(ctx, "output_file_name");
                                 var configJson = createConfigJson(definition, sortedElements);
@@ -386,7 +389,7 @@ public class CPMModelExportClient implements ClientModInitializer {
         }
     }
 
-    private LinkedList<JsonObject> parseAnimationData(HashMap<Integer, AnimationTrigger> animationData, LinkedList<JsonObject> unsortedElements) {
+    private LinkedList<JsonObject> parseAnimationData(HashMap<Integer, AnimationTrigger> animationData, HashMap<Integer, Long> internalIdStoreIdMapping) {
         var resultList = new LinkedList<JsonObject>();
 
         animationData.forEach((i, at) -> {
@@ -402,72 +405,13 @@ public class CPMModelExportClient implements ClientModInitializer {
             if (at.animations.get(0) instanceof Animation) {
                 System.out.println("Yeash");
                 var animation = (AnimationAccessor) at.animations.get(0);
-                var psfs = animation.getPsfs();
+
                 animationJson.addProperty("duration", animation.getDuration());
                 animationJson.addProperty("additive", animation.getAdd());
                 animationJson.addProperty("priority", animation.getPriority());
-                Interpolator inter = animation.getPsfs()[0][0];
-                if (inter instanceof LinearInterpolator) {
-                    animationJson.addProperty("interpolator", "linear_single");
-                } else if (inter instanceof LinearLoopInterpolator) {
-                    animationJson.addProperty("interpolator", "linear_loop");
-                } else if (inter instanceof NoInterpolate) {
-                    animationJson.addProperty("interpolator", "no_interpolate");
-                } else if (inter instanceof PolynomialSplineInterpolator) {
-                    animationJson.addProperty("interpolator", "poly_single");
-                } else if (inter instanceof PolynomialSplineLoopInterpolator) {
-                    animationJson.addProperty("interpolator", "poly_loop");
-                } else if (inter instanceof TrigonometricInterpolator) {
-                    animationJson.addProperty("interpolator", "trig_single");
-                } else if (inter instanceof TrigonometricLoopInterpolator) {
-                    animationJson.addProperty("interpolator", "trig_loop");
-                }
+                animationJson.addProperty("interpolator", getInterpolatorName(animation.getPsfs()[0][0]));
 
-                var frames = new JsonArray();
-                var framesJson = new JsonArray();
-                var duration = animation.getDuration();
-                var framesInt = animation.getFrames();
-                var componentIDs = animation.getComponentIDs();
-
-                for (int q = 0; q < framesInt; q++) {
-                    var frame = new JsonObject();
-                    var components = new JsonArray();
-                    for (int componentId = 0; componentId < componentIDs.length; ++componentId) {
-                        IModelComponent component = componentIDs[componentId];
-                        var componentJson = new JsonObject();
-
-                        if (component instanceof RenderedCube) {
-                            var rc = (RenderedCube) component;
-                            var internal_id = rc.getId();
-                            long storeId = 0;
-
-                            for (JsonObject c : unsortedElements) {
-                                if (internal_id == c.get("internal_id").getAsInt()) {
-                                    System.out.println(c);
-                                    storeId = c.get("storeID").getAsLong();
-                                    break;
-                                }
-                            }
-                            componentJson.addProperty("storeID", storeId);
-                            componentJson.addProperty("color", String.format("%02x%02x%02x", (int) psfs[componentId][InterpolatorChannel.COLOR_R.channelID()].applyAsDouble(q), (int) psfs[componentId][InterpolatorChannel.COLOR_G.channelID()].applyAsDouble(q), (int) psfs[componentId][InterpolatorChannel.COLOR_B.channelID()].applyAsDouble(q)));
-                            componentJson.addProperty("show", animation.getShow()[componentId][q]);
-                            componentJson.add("pos", vec((float) psfs[componentId][InterpolatorChannel.POS_X.channelID()].applyAsDouble(q), (float) psfs[componentId][InterpolatorChannel.POS_Y.channelID()].applyAsDouble(q), (float) psfs[componentId][InterpolatorChannel.POS_Z.channelID()].applyAsDouble(q)));
-//                            componentJson.add("rotation", vec((int) Math.ceil(Math.toDegrees(psfs[componentId][InterpolatorChannel.ROT_X.channelID()].applyAsDouble(q))), (int) Math.ceil(Math.toDegrees(psfs[componentId][InterpolatorChannel.ROT_Y.channelID()].applyAsDouble(q))), (int) Math.ceil(Math.toDegrees(psfs[componentId][InterpolatorChannel.ROT_Z.channelID()].applyAsDouble(q)))));
-//                            componentJson.add("rotation", vec((float) Math.toDegrees(psfs[componentId][InterpolatorChannel.ROT_X.channelID()].applyAsDouble(q))%360, (float) Math.toDegrees(psfs[componentId][InterpolatorChannel.ROT_Y.channelID()].applyAsDouble(q))%360, (float) Math.toDegrees(psfs[componentId][InterpolatorChannel.ROT_Z.channelID()].applyAsDouble(q))%360));
-                            var x = (float) (Math.toDegrees(psfs[componentId][InterpolatorChannel.ROT_X.channelID()].applyAsDouble(q))%360 < 0 ? 360+Math.toDegrees(psfs[componentId][InterpolatorChannel.ROT_X.channelID()].applyAsDouble(q))%360 : Math.toDegrees(psfs[componentId][InterpolatorChannel.ROT_X.channelID()].applyAsDouble(q))%360);
-                            var y = (float) (Math.toDegrees(psfs[componentId][InterpolatorChannel.ROT_Y.channelID()].applyAsDouble(q))%360 < 0 ? 360+Math.toDegrees(psfs[componentId][InterpolatorChannel.ROT_Y.channelID()].applyAsDouble(q))%360 : Math.toDegrees(psfs[componentId][InterpolatorChannel.ROT_Y.channelID()].applyAsDouble(q))%360);
-                            var z = (float) (Math.toDegrees(psfs[componentId][InterpolatorChannel.ROT_Z.channelID()].applyAsDouble(q))%360 < 0 ?  360+Math.toDegrees(psfs[componentId][InterpolatorChannel.ROT_Z.channelID()].applyAsDouble(q))%360 : Math.toDegrees(psfs[componentId][InterpolatorChannel.ROT_Z.channelID()].applyAsDouble(q))%360);
-                            componentJson.add("rotation", vec(x, y, z));
-                            componentJson.add("scale", vec((float) psfs[componentId][InterpolatorChannel.SCALE_X.channelID()].applyAsDouble(q), (float) psfs[componentId][InterpolatorChannel.SCALE_Y.channelID()].applyAsDouble(q), (float) psfs[componentId][InterpolatorChannel.SCALE_Z.channelID()].applyAsDouble(q)));
-                        }
-                        components.add(componentJson);
-                    }
-                    frame.add("components", components);
-
-                    frames.add(frame);
-                }
-
-                animationJson.add("frames", frames);
+                animationJson.add("frames", parseFrames(animation, internalIdStoreIdMapping));
             }
 
             if (at.valuePose != null) {
@@ -529,5 +473,56 @@ public class CPMModelExportClient implements ClientModInitializer {
             zout.write(gson.toJson(animation).getBytes(StandardCharsets.UTF_8));
             zout.closeEntry();
         }
+    }
+
+    private JsonArray parseFrames(AnimationAccessor animation, HashMap<Integer, Long> internalIdStoreIdMapping) {
+        var componentIDs = animation.getComponentIDs();
+        var psfs = animation.getPsfs();
+        var frames = new JsonArray();
+
+        for (int q = 0; q < animation.getFrames(); q++) {
+            var frame = new JsonObject();
+            var components = new JsonArray();
+            for (int componentId = 0; componentId < componentIDs.length; componentId++) {
+                IModelComponent component = componentIDs[componentId];
+                var componentJson = new JsonObject();
+                long storeId = 0;
+
+                if (component instanceof RenderedCube rc) {
+                    storeId = internalIdStoreIdMapping.get(rc.getId());
+                } else if (component instanceof RootModelElement el) {
+                    storeId = internalIdStoreIdMapping.get(el.getId());
+                }
+
+                componentJson.addProperty("storeID", storeId);
+                componentJson.addProperty("color", String.format("%02x%02x%02x", (int) psfs[componentId][InterpolatorChannel.COLOR_R.channelID()].applyAsDouble(q), (int) psfs[componentId][InterpolatorChannel.COLOR_G.channelID()].applyAsDouble(q), (int) psfs[componentId][InterpolatorChannel.COLOR_B.channelID()].applyAsDouble(q)));
+                componentJson.addProperty("show", animation.getShow()[componentId][q]);
+                componentJson.add("pos", vec((float) psfs[componentId][InterpolatorChannel.POS_X.channelID()].applyAsDouble(q), (float) psfs[componentId][InterpolatorChannel.POS_Y.channelID()].applyAsDouble(q), (float) psfs[componentId][InterpolatorChannel.POS_Z.channelID()].applyAsDouble(q)));
+                var x = (float) (Math.toDegrees(psfs[componentId][InterpolatorChannel.ROT_X.channelID()].applyAsDouble(q))%360 < 0 ? 360+Math.toDegrees(psfs[componentId][InterpolatorChannel.ROT_X.channelID()].applyAsDouble(q))%360 : Math.toDegrees(psfs[componentId][InterpolatorChannel.ROT_X.channelID()].applyAsDouble(q))%360);
+                var y = (float) (Math.toDegrees(psfs[componentId][InterpolatorChannel.ROT_Y.channelID()].applyAsDouble(q))%360 < 0 ? 360+Math.toDegrees(psfs[componentId][InterpolatorChannel.ROT_Y.channelID()].applyAsDouble(q))%360 : Math.toDegrees(psfs[componentId][InterpolatorChannel.ROT_Y.channelID()].applyAsDouble(q))%360);
+                var z = (float) (Math.toDegrees(psfs[componentId][InterpolatorChannel.ROT_Z.channelID()].applyAsDouble(q))%360 < 0 ?  360+Math.toDegrees(psfs[componentId][InterpolatorChannel.ROT_Z.channelID()].applyAsDouble(q))%360 : Math.toDegrees(psfs[componentId][InterpolatorChannel.ROT_Z.channelID()].applyAsDouble(q))%360);
+                componentJson.add("rotation", vec(x, y, z));
+                componentJson.add("scale", vec((float) psfs[componentId][InterpolatorChannel.SCALE_X.channelID()].applyAsDouble(q), (float) psfs[componentId][InterpolatorChannel.SCALE_Y.channelID()].applyAsDouble(q), (float) psfs[componentId][InterpolatorChannel.SCALE_Z.channelID()].applyAsDouble(q)));
+
+                components.add(componentJson);
+            }
+            frame.add("components", components);
+
+            frames.add(frame);
+        }
+
+        return frames;
+    }
+
+    private String getInterpolatorName(Interpolator inter) {
+        if (inter instanceof LinearInterpolator) return "linear_single";
+        if (inter instanceof LinearLoopInterpolator) return "linear_loop";
+        if (inter instanceof NoInterpolate) return "no_interpolate";
+        if (inter instanceof PolynomialSplineInterpolator) return "poly_single";
+        if (inter instanceof PolynomialSplineLoopInterpolator) return "poly_loop";
+        if (inter instanceof TrigonometricInterpolator) return "trig_single";
+        if (inter instanceof TrigonometricLoopInterpolator) return "trig_loop";
+
+        throw new IllegalArgumentException("Unknown interpolator: " + inter.getClass());
     }
 }
