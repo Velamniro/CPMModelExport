@@ -1,5 +1,6 @@
 package xyz.bluspring.cpmmodelexport.client;
 
+import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
@@ -8,6 +9,8 @@ import com.tom.cpl.math.Vec3f;
 import com.tom.cpl.util.ImageIO;
 import com.tom.cpm.client.CustomPlayerModelsClient;
 import com.tom.cpm.shared.MinecraftClientAccess;
+import com.tom.cpm.shared.animation.*;
+import com.tom.cpm.shared.animation.interpolator.*;
 import com.tom.cpm.shared.definition.ModelDefinition;
 import com.tom.cpm.shared.model.PlayerModelParts;
 import com.tom.cpm.shared.model.RenderedCube;
@@ -22,7 +25,9 @@ import net.minecraft.Util;
 import xyz.bluspring.cpmmodelexport.mixin.*;
 
 import java.io.*;
+import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
+import java.text.DecimalFormat;
 import java.util.*;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -89,11 +94,20 @@ public class CPMModelExportClient implements ClientModInitializer {
                                     sortedElements.add(rootElement);
                                 }
 
+                                var animationData = new HashMap<Integer, AnimationTrigger>();
+                                var i = 0;
+
+                                for (AnimationTrigger trigger : definition.getAnimations().getAnimations()) {
+                                    animationData.put(i, trigger);
+                                    i++;
+                                }
+
+                                LinkedList<JsonObject> animationList = parseAnimationData(animationData, unsortedElements);
+
                                 var outputFileName = StringArgumentType.getString(ctx, "output_file_name");
                                 var configJson = createConfigJson(definition, sortedElements);
                                 var encAnimJson = createEmptyEncAnim();
-                                createProjectFile(outputFileName, configJson, encAnimJson, definition.getTexture(TextureSheetType.SKIN, true));
-
+                                createProjectFile(outputFileName, configJson, encAnimJson, definition.getTexture(TextureSheetType.SKIN, true), animationList);
                             } catch (Exception e) {
                                 e.printStackTrace();
                             }
@@ -204,6 +218,8 @@ public class CPMModelExportClient implements ClientModInitializer {
     private JsonObject createElementFromRenderedCube(RenderedCube rc) {
         var json = new JsonObject();
         Vec3f rot;
+        var uuid = UUID.randomUUID();
+        var id = uuid.toString();
 
         // universal properties
         json.addProperty("internal_id", rc.getId());
@@ -211,11 +227,10 @@ public class CPMModelExportClient implements ClientModInitializer {
         json.addProperty("nameColor", rc.color);
         json.addProperty("hidden", rc.isHidden());
         json.addProperty("locked", false);
+        json.addProperty("storeID", uuid.getMostSignificantBits());
 
         if (!(rc instanceof RootModelElement)) {
             var cube = rc.getCube();
-            var uuid = UUID.randomUUID();
-            var id = uuid.toString();
             rot = rc.rotation.asVec3f(true);
 
             json.addProperty("internal_parent_id", cube.parentId);
@@ -225,7 +240,6 @@ public class CPMModelExportClient implements ClientModInitializer {
             json.addProperty("color", Integer.toHexString(rc.color));
             json.addProperty("texture", cube.texSize != 0);
             json.add("scale", vec(rc.renderScale.x, rc.renderScale.y, rc.renderScale.z));
-            json.addProperty("storeId", uuid.getMostSignificantBits());
             json.addProperty("textureSize", cube.texSize);
             json.addProperty("mcScale", cube.mcScale);
             json.add("size", vec(cube.size.x, cube.size.y, cube.size.z));
@@ -338,7 +352,7 @@ public class CPMModelExportClient implements ClientModInitializer {
      * @param skinData        model skin data a {@code TextureProvider} instance
      * @throws IOException    if an I/O error occurs while writing the project file
      */
-    private void createProjectFile(String outputFileName, JsonObject configJson, JsonObject encAnimJson, TextureProvider skinData) throws IOException {
+    private void createProjectFile(String outputFileName, JsonObject configJson, JsonObject encAnimJson, TextureProvider skinData, LinkedList<JsonObject> animationList) throws IOException {
         var gson = new GsonBuilder().setPrettyPrinting().create();
 
         File models = new File(MinecraftClientAccess.get().getGameDir(), "player_models");
@@ -364,8 +378,156 @@ public class CPMModelExportClient implements ClientModInitializer {
             ImageIO.write(skinData.getImage(), baos);
             zout.write(baos.toByteArray());
             zout.closeEntry();
+
+            zout.putNextEntry(new ZipEntry("animations/"));
+            addAnimationsToZout(zout, animationList, gson);
         } catch (Exception e) {
             e.printStackTrace();
+        }
+    }
+
+    private LinkedList<JsonObject> parseAnimationData(HashMap<Integer, AnimationTrigger> animationData, LinkedList<JsonObject> unsortedElements) {
+        var resultList = new LinkedList<JsonObject>();
+
+        animationData.forEach((i, at) -> {
+            var animationJson = new JsonObject();
+
+//            animationJson.addProperty("hidden", at.isButtonHidden());
+            animationJson.addProperty("maxValue", 100);
+            animationJson.addProperty("isProperty", false);
+            animationJson.addProperty("interpolateVal", true);
+            animationJson.addProperty("loop", at.looping);
+            animationJson.addProperty("mustFinish", at.mustFinish);
+
+            if (at.animations.get(0) instanceof Animation) {
+                System.out.println("Yeash");
+                var animation = (AnimationAccessor) at.animations.get(0);
+                var psfs = animation.getPsfs();
+                animationJson.addProperty("duration", animation.getDuration());
+                animationJson.addProperty("additive", animation.getAdd());
+                animationJson.addProperty("priority", animation.getPriority());
+                Interpolator inter = animation.getPsfs()[0][0];
+                if (inter instanceof LinearInterpolator) {
+                    animationJson.addProperty("interpolator", "linear_single");
+                } else if (inter instanceof LinearLoopInterpolator) {
+                    animationJson.addProperty("interpolator", "linear_loop");
+                } else if (inter instanceof NoInterpolate) {
+                    animationJson.addProperty("interpolator", "no_interpolate");
+                } else if (inter instanceof PolynomialSplineInterpolator) {
+                    animationJson.addProperty("interpolator", "poly_single");
+                } else if (inter instanceof PolynomialSplineLoopInterpolator) {
+                    animationJson.addProperty("interpolator", "poly_loop");
+                } else if (inter instanceof TrigonometricInterpolator) {
+                    animationJson.addProperty("interpolator", "trig_single");
+                } else if (inter instanceof TrigonometricLoopInterpolator) {
+                    animationJson.addProperty("interpolator", "trig_loop");
+                }
+
+                var frames = new JsonArray();
+                var framesJson = new JsonArray();
+                var duration = animation.getDuration();
+                var framesInt = animation.getFrames();
+                var componentIDs = animation.getComponentIDs();
+
+                for (int q = 0; q < framesInt; q++) {
+                    var frame = new JsonObject();
+                    var components = new JsonArray();
+                    for (int componentId = 0; componentId < componentIDs.length; ++componentId) {
+                        IModelComponent component = componentIDs[componentId];
+                        var componentJson = new JsonObject();
+
+                        if (component instanceof RenderedCube) {
+                            var rc = (RenderedCube) component;
+                            var internal_id = rc.getId();
+                            long storeId = 0;
+
+                            for (JsonObject c : unsortedElements) {
+                                if (internal_id == c.get("internal_id").getAsInt()) {
+                                    System.out.println(c);
+                                    storeId = c.get("storeID").getAsLong();
+                                    break;
+                                }
+                            }
+                            componentJson.addProperty("storeID", storeId);
+                            componentJson.addProperty("color", String.format("%02x%02x%02x", (int) psfs[componentId][InterpolatorChannel.COLOR_R.channelID()].applyAsDouble(q), (int) psfs[componentId][InterpolatorChannel.COLOR_G.channelID()].applyAsDouble(q), (int) psfs[componentId][InterpolatorChannel.COLOR_B.channelID()].applyAsDouble(q)));
+                            componentJson.addProperty("show", animation.getShow()[componentId][q]);
+                            componentJson.add("pos", vec((float) psfs[componentId][InterpolatorChannel.POS_X.channelID()].applyAsDouble(q), (float) psfs[componentId][InterpolatorChannel.POS_Y.channelID()].applyAsDouble(q), (float) psfs[componentId][InterpolatorChannel.POS_Z.channelID()].applyAsDouble(q)));
+//                            componentJson.add("rotation", vec((int) Math.ceil(Math.toDegrees(psfs[componentId][InterpolatorChannel.ROT_X.channelID()].applyAsDouble(q))), (int) Math.ceil(Math.toDegrees(psfs[componentId][InterpolatorChannel.ROT_Y.channelID()].applyAsDouble(q))), (int) Math.ceil(Math.toDegrees(psfs[componentId][InterpolatorChannel.ROT_Z.channelID()].applyAsDouble(q)))));
+//                            componentJson.add("rotation", vec((float) Math.toDegrees(psfs[componentId][InterpolatorChannel.ROT_X.channelID()].applyAsDouble(q))%360, (float) Math.toDegrees(psfs[componentId][InterpolatorChannel.ROT_Y.channelID()].applyAsDouble(q))%360, (float) Math.toDegrees(psfs[componentId][InterpolatorChannel.ROT_Z.channelID()].applyAsDouble(q))%360));
+                            var x = (float) (Math.toDegrees(psfs[componentId][InterpolatorChannel.ROT_X.channelID()].applyAsDouble(q))%360 < 0 ? 360+Math.toDegrees(psfs[componentId][InterpolatorChannel.ROT_X.channelID()].applyAsDouble(q))%360 : Math.toDegrees(psfs[componentId][InterpolatorChannel.ROT_X.channelID()].applyAsDouble(q))%360);
+                            var y = (float) (Math.toDegrees(psfs[componentId][InterpolatorChannel.ROT_Y.channelID()].applyAsDouble(q))%360 < 0 ? 360+Math.toDegrees(psfs[componentId][InterpolatorChannel.ROT_Y.channelID()].applyAsDouble(q))%360 : Math.toDegrees(psfs[componentId][InterpolatorChannel.ROT_Y.channelID()].applyAsDouble(q))%360);
+                            var z = (float) (Math.toDegrees(psfs[componentId][InterpolatorChannel.ROT_Z.channelID()].applyAsDouble(q))%360 < 0 ?  360+Math.toDegrees(psfs[componentId][InterpolatorChannel.ROT_Z.channelID()].applyAsDouble(q))%360 : Math.toDegrees(psfs[componentId][InterpolatorChannel.ROT_Z.channelID()].applyAsDouble(q))%360);
+                            componentJson.add("rotation", vec(x, y, z));
+                            componentJson.add("scale", vec((float) psfs[componentId][InterpolatorChannel.SCALE_X.channelID()].applyAsDouble(q), (float) psfs[componentId][InterpolatorChannel.SCALE_Y.channelID()].applyAsDouble(q), (float) psfs[componentId][InterpolatorChannel.SCALE_Z.channelID()].applyAsDouble(q)));
+                        }
+                        components.add(componentJson);
+                    }
+                    frame.add("components", components);
+
+                    frames.add(frame);
+                }
+
+                animationJson.add("frames", frames);
+            }
+
+            if (at.valuePose != null) {
+                animationJson.addProperty("pose", at.valuePose.name().toLowerCase());
+                animationJson.addProperty("name", "Pasxalka");
+                animationJson.addProperty("order", 0);
+                animationJson.addProperty("command", false);
+                animationJson.addProperty("layerControlled", true);
+                animationJson.addProperty("prefix", "v");
+                animationJson.addProperty("hidden", false);
+            } else {
+                at.onPoses.forEach((pose) -> {
+//                    animationJson.addProperty("pose", "custom");
+//                    animationJson.addProperty("name", ((CustomPose) pose).getName());
+                    if (pose instanceof VanillaPose) {
+                        animationJson.addProperty("pose", ((VanillaPose) pose).name().toLowerCase());
+                        animationJson.addProperty("name", "Pasxalka");
+                        animationJson.addProperty("prefix", "g");
+                        animationJson.addProperty("order", 0);
+                        animationJson.addProperty("command", false);
+                        animationJson.addProperty("layerControlled", true);
+                    } else {
+                        animationJson.addProperty("pose", "custom");
+                        animationJson.addProperty("name", ((CustomPose) pose).getName());
+                        animationJson.addProperty("prefix", "c");
+                        animationJson.addProperty("order", ((CustomPose) pose).order);
+                        animationJson.addProperty("command", ((CustomPose) pose).command);
+                        animationJson.addProperty("layerControlled", ((CustomPose) pose).layerCtrl);
+                    }
+                });
+            }
+
+            System.out.println(at.animations.get(0));
+            System.out.println(at.onPoses);
+            System.out.println(at.valuePose);
+            System.out.println("#########");
+
+            resultList.add(animationJson);
+        });
+
+        return resultList;
+    }
+
+    private void addAnimationsToZout(ZipOutputStream zout, LinkedList<JsonObject> animationList, Gson gson) throws IOException {
+        for (JsonObject animation : animationList) {
+            var uuid = UUID.randomUUID();
+//            zout.putNextEntry(new ZipEntry("animations/" + animation.get("prefix").getAsString() + "_" +
+//                    animation.get("pose").getAsString() + "_" + animation.get("name").toString() + "_" +
+//                    uuid + ".json"));
+            var prefix = animation.get("prefix").getAsString();
+            var pose = animation.get("pose").getAsString();
+            var name = animation.get("name").getAsString();
+
+            switch (prefix) {
+                case "v" -> zout.putNextEntry(new ZipEntry("animations/" + prefix + "_" + pose + "_" + name + "_" + uuid + ".json"));
+                case "g", "c" -> zout.putNextEntry(new ZipEntry("animations/" + prefix + "_" + name + "_" + uuid + ".json"));
+            }
+
+            zout.write(gson.toJson(animation).getBytes(StandardCharsets.UTF_8));
+            zout.closeEntry();
         }
     }
 }

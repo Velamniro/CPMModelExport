@@ -4,7 +4,8 @@
     "package": "xyz.bluspring.cpmmodelexport.mixin",
     "compatibilityLevel": "JAVA_17",
     "mixins": [
-        "ModelDefinitionAccessor"
+        "ModelDefinitionAccessor",
+        "AnimationAccessor"
     ],
     "client": [
     ],
